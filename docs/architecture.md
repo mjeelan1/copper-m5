@@ -171,3 +171,31 @@ the tests and a golden-set evaluation with an AI judge run in GitHub Actions
 on every pull request, with `main` protected; every AI call is traced in
 Langfuse; and one support agent that does everything is compared with the two
 agents on the same golden set. Langfuse is the only eval and monitoring tool.
+
+## Module 5: Langfuse tracing
+
+**Summary:** Every AI call is traced in Langfuse, so you can see what each
+agent did, which tools it called, and the tokens, cost and time of every step.
+Each Ask Copper turn is one trace.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Startup | `instrumentation.ts`, `lib/ai/tracing.ts` | When the server starts, `startTracing()` registers Langfuse with the AI SDK (`@langfuse/vercel-ai-sdk`) and an OpenTelemetry tracer that sends spans to Langfuse (`@langfuse/otel`). Without the keys it does nothing |
+| Call names | `lib/ai/call.ts` | Every call passes `telemetry.functionId` = its feature (`ask-copper`, `refund-agent`, `search-docs`), so it shows by name in Langfuse |
+| Turn trace | `lib/copper/assistant/ask.ts` | One trace per turn, named `ask-copper` and tagged (`support-page` or `home-page`, `tools` or `no-tools`, `two-agents`). Input is the customer's message, output is the reply. A span per agent (`Copper`, `Refund agent`) holds that agent's model calls and tool calls. `after()` sends the trace once the turn ends |
+| Keys | `.env.local`, Vercel | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` (the region: EU `https://cloud.langfuse.com`, US `https://us.cloud.langfuse.com`) |
+
+**Data flow:** customer message → `askCopper` → trace `ask-copper` → span
+`Copper` → model calls and tools (→ span `Refund agent` after a handoff) →
+reply → trace sent to Langfuse.
+
+**Decisions and trade-offs:** Langfuse's own AI SDK v7 integration rather than
+the generic OpenTelemetry one, so model calls arrive as Langfuse generations
+with tokens. `@ai-sdk/otel` is pinned to the app's `ai` version so there is
+one copy of the AI SDK. The app's own `[ai_calls]` log stays: it works without
+Langfuse.
+
+**Risks and open questions:** Traces include what customers type and the
+replies, so they hold personal data; Langfuse's `mask` option can redact it.
+Langfuse prices only models it knows; if a trace shows no cost, add the model
+in Langfuse with the prices in `lib/ai/pricing.ts`.

@@ -9,9 +9,14 @@
 // talking. Copper can hand the conversation to the Refund agent, a second
 // agent with its own instructions and tools, and the Refund agent can hand it
 // back. The agent that ends the turn answers the next message too.
+// Module 5: each turn is one trace in Langfuse ("ask-copper"), with a span per
+// agent that answered, and inside it that agent's model calls and tools.
+import { propagateAttributes, startActiveObservation } from "@langfuse/tracing";
 import { hasToolCall, stepCountIs } from "ai";
+import { after } from "next/server";
 import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
 import { createLive, type Live } from "@/lib/ai/live";
+import { flushTracing, isTracingOn } from "@/lib/ai/tracing";
 import {
   COPPER_HANDOFF,
   COPPER_INSTRUCTIONS,
@@ -60,6 +65,30 @@ const STOP = [
 ];
 
 const SORRY = "Sorry, something went wrong on my end. Please try again.";
+
+const AGENT_NAMES: Record<Agent, string> = {
+  copper: "Copper",
+  refund: "Refund agent",
+};
+
+/** Runs one agent's turn inside its own span in the Langfuse trace. */
+function asAgent<T>(agent: Agent, run: () => Promise<T>): Promise<T> {
+  return startActiveObservation(AGENT_NAMES[agent], run, { asType: "agent" });
+}
+
+/**
+ * Sends the turn's trace to Langfuse once the turn ends. `after` keeps the
+ * server running until it's sent; outside a request (tests) it just sends.
+ */
+function flushWhenDone(turn: Promise<unknown>) {
+  if (!isTracingOn()) return;
+  const flush = () => turn.finally(flushTracing);
+  try {
+    after(flush);
+  } catch {
+    void flush();
+  }
+}
 
 /** One agent's call: its instructions and only its own tools. */
 function agentCall(agent: Agent, messages: ChatMessage[], desk?: Desk) {
@@ -191,24 +220,26 @@ export async function askCopper({
   }
 
   // Read the stream in the background, so the panel gets the first update now.
-  void (async () => {
+  const run = async () => {
     try {
       if (!useTools) {
         // Without tools, send no instructions either: "always use your
         // tools" with no tools makes the model answer with nothing.
-        await follow(
-          "copper",
-          callStream(
-            { module: 2, feature: "ask-copper" },
-            { messages, providerOptions: THOUGHT_SUMMARIES },
+        await asAgent("copper", () =>
+          follow(
+            "copper",
+            callStream(
+              { module: 2, feature: "ask-copper" },
+              { messages, providerOptions: THOUGHT_SUMMARIES },
+            ),
           ),
         );
       } else {
         let current = first;
         for (let handoffs = 0; ; handoffs++) {
-          const next = await follow(
-            current,
-            agentCall(current, messages, desk),
+          const agent = current;
+          const next = await asAgent(agent, () =>
+            follow(agent, agentCall(agent, messages, desk)),
           );
           if (!next || next === current || handoffs >= MAX_HANDOFFS) break;
           progress.steps.push({ type: "handoff", from: current, to: next });
@@ -225,7 +256,37 @@ export async function askCopper({
       if (!progress.reply.trim()) progress.reply = SORRY;
     }
     done(snapshot());
-  })();
+  };
+
+  // One Langfuse trace per turn: the customer's message in, the reply out.
+  const turn = propagateAttributes(
+    {
+      traceName: "ask-copper",
+      // "two-agents": Copper can hand off to the Refund agent (Support page).
+      tags: [
+        desk ? "support-page" : "home-page",
+        useTools ? "tools" : "no-tools",
+        ...(desk && useTools ? ["two-agents"] : []),
+      ],
+    },
+    () =>
+      startActiveObservation(
+        "ask-copper",
+        async (span) => {
+          span.update({
+            input: messages.at(-1)?.content,
+            metadata: { firstAgent: first, turns: messages.length },
+          });
+          await run();
+          span.update({
+            output: progress.reply,
+            metadata: { lastAgent: progress.agent, status: progress.status },
+          });
+        },
+        { asType: "chain" },
+      ),
+  );
+  flushWhenDone(turn);
 
   return { progress: live };
 }
