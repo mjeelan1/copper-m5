@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # Pull requests run CI once. Pushes run it only on main (after a merge), so a
+  # branch with an open pull request isn't checked twice.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
