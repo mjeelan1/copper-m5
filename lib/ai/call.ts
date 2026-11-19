@@ -12,7 +12,9 @@ import { costUsd } from "@/lib/ai/pricing";
 
 // Every model call in the app goes through this file, so each one is logged
 // with its tokens, cost and how long it took. The log goes to the terminal
-// running the app, as a line starting "[ai_calls]".
+// running the app, as a line starting "[ai_calls]". Module 5: when the
+// Langfuse keys are set, each call is also traced in Langfuse, named after its
+// feature (lib/ai/tracing.ts).
 
 export class AiNotConfiguredError extends Error {
   constructor() {
@@ -114,7 +116,11 @@ async function tracked<T extends { usage: Usage }>(
 /** Generates text. Example: callText({ module: 3, feature: "support-answer" }, { prompt }) */
 export async function callText(info: CallInfo, options: TextOptions) {
   return tracked(info, (model) =>
-    generateText({ ...options, model: languageModel(model) }),
+    generateText({
+      telemetry: { functionId: info.feature },
+      ...options,
+      model: languageModel(model),
+    }),
   );
 }
 
@@ -126,6 +132,7 @@ export async function callObject<Schema extends z.ZodType>(
   const { schema, ...rest } = options;
   const result = await tracked(info, (model) =>
     generateText({
+      telemetry: { functionId: info.feature },
       ...rest,
       model: languageModel(model),
       output: Output.object({ schema }),
@@ -162,6 +169,7 @@ export async function callEmbedMany(
     const result = await embedMany({
       model: google().embedding(EMBEDDING_MODEL.slice("google/".length)),
       values,
+      telemetry: { functionId: info.feature },
       providerOptions: {
         google: { outputDimensionality: EMBEDDING_DIMENSIONS },
       },
@@ -188,6 +196,7 @@ export function callStream(info: CallInfo, options: StreamOptions) {
   const model = info.model ?? defaultModel();
   const row = rowFor(info, model, performance.now());
   return streamText({
+    telemetry: { functionId: info.feature },
     ...options,
     model: languageModel(model),
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),
