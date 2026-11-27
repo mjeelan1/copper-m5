@@ -3,6 +3,10 @@
 // (judge.ts) and code checks (checks.ts) score the answers in Langfuse.
 import { askCopper } from "@/lib/copper/assistant/ask";
 import type { ToolStep } from "@/lib/copper/assistant/progress";
+import {
+  type AgentVariant,
+  agentVariant,
+} from "@/lib/copper/assistant/variant";
 import { finalValue } from "@/lib/ai/live";
 import { DEFAULT_LIMIT_USD } from "@/lib/copper/orders";
 import data from "./golden-set.json";
@@ -43,6 +47,8 @@ export type EvalMetadata = Pick<GoldenItem, "id" | "category" | "tools"> & {
 /** Ask Copper's answer to one item, as the judge and checks see it. */
 export type EvalOutput = {
   reply: string;
+  /** Which version of Ask Copper answered (ASK_COPPER_AGENTS). */
+  variant?: AgentVariant;
   /** Agents that answered, in order: ["copper"] or ["copper", "refund"]. */
   agents: string[];
   tools: { agent: string; name: string; output?: unknown }[];
@@ -93,6 +99,7 @@ export async function askGolden(input: EvalInput): Promise<EvalOutput> {
   ];
   return {
     reply: result.reply,
+    variant: agentVariant(),
     agents,
     tools: result.steps
       .filter((s): s is ToolStep => s.type === "tool")

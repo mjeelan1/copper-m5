@@ -51,10 +51,27 @@ export async function judgeEvaluator({
   ];
 }
 
+/** The two agents' handoff tools; the single support agent has none. */
+export const HANDOFF_TOOLS = ["transfer_to_refund_agent", "transfer_to_copper"];
+
+/**
+ * The tools an answer needs from this version: the single agent has no
+ * handoff, so it's checked only for the tools that do the work (like
+ * request_refund).
+ */
+export function neededTools(
+  tools: string[],
+  variant: EvalOutput["variant"],
+): string[] {
+  return variant === "single-agent"
+    ? tools.filter((need) => !HANDOFF_TOOLS.includes(need))
+    : tools;
+}
+
 /** Code: did Copper call every tool the item needs? ("a|b" means either.) */
 export function toolsScore(output: EvalOutput, tools: string[]): Score {
   const used = new Set(output.tools.map((t) => t.name));
-  const missing = tools.filter(
+  const missing = neededTools(tools, output.variant).filter(
     (need) => !need.split("|").some((name) => used.has(name)),
   );
   return {

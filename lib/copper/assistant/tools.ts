@@ -320,3 +320,14 @@ export function refundAgentTools(desk: Desk) {
     }),
   };
 }
+
+/**
+ * Module 5: the single support agent's tools, the alternative to two agents:
+ * Copper's tools plus the Refund agent's get_orders and request_refund, and no
+ * handoff. request_refund is the same tool, so the app still decides every
+ * refund against the auto-refund limit.
+ */
+export function supportAgentTools(desk: Desk) {
+  const { get_orders, request_refund } = refundAgentTools(desk);
+  return { ...copperTools, get_orders, request_refund };
+}

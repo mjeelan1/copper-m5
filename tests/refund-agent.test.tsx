@@ -218,6 +218,73 @@ describe("handoff to the Refund agent", () => {
   });
 });
 
+describe("single support agent (Module 5, ASK_COPPER_AGENTS=single-agent)", () => {
+  it("one agent has every tool and no handoff; the app still decides the refund", async () => {
+    vi.stubEnv("ASK_COPPER_AGENTS", "single-agent");
+    model = modelStreaming(
+      calls("request_refund", { orderId: "1004" }),
+      says("A supervisor needs to approve it."),
+    );
+    const result = await ask({
+      messages: [{ role: "user", content: "Refund order #1004" }],
+      useTools: true,
+      desk: desk(50),
+      agent: "refund",
+    });
+    expect(result.status).toBe("done");
+    expect(result.agent).toBe("copper");
+    expect(result.steps.some((s) => s.type === "handoff")).toBe(false);
+    expect(toolCallsOf(result)[0].output).toMatchObject({
+      status: "needs_approval",
+      amountUsd: 149,
+    });
+    expect(model.doStreamCalls).toHaveLength(2);
+    const call = model.doStreamCalls[0];
+    expect(call.tools?.map((t) => t.name).sort()).toEqual([
+      "calculate_cost",
+      "check_availability",
+      "get_orders",
+      "get_prices",
+      "get_products",
+      "request_refund",
+      "search_docs",
+    ]);
+    const prompt = JSON.stringify(call.prompt);
+    expect(prompt).toContain("You are Copper");
+    expect(prompt).toContain("there is no other agent");
+    expect(prompt).not.toContain("transfer_to");
+  });
+
+  it("refunds under the limit itself", async () => {
+    vi.stubEnv("ASK_COPPER_AGENTS", "single-agent");
+    model = modelStreaming(
+      calls("request_refund", { orderId: "1001" }),
+      says("Refunded."),
+    );
+    const result = await ask({
+      messages: [{ role: "user", content: "Refund my monthly plan" }],
+      useTools: true,
+      desk: desk(50),
+    });
+    expect(toolCallsOf(result)[0].output).toMatchObject({
+      status: "refunded",
+      amountUsd: 7.99,
+    });
+  });
+
+  it("is off by default: two agents with the handoff", async () => {
+    model = modelStreaming(says("Hi!"));
+    await ask({
+      messages: [{ role: "user", content: "Hi" }],
+      useTools: true,
+      desk: desk(50),
+    });
+    expect(model.doStreamCalls[0].tools?.map((t) => t.name)).toContain(
+      "transfer_to_refund_agent",
+    );
+  });
+});
+
 describe("Refund Console", () => {
   it("shows the limit, an empty waiting area and the customer's orders", async () => {
     vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key");
