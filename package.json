@@ -15,12 +15,14 @@
     "format": "prettier --write .",
     "start-module": "node scripts/start-module.mjs",
     "env:check": "node scripts/check-env.mjs",
-    "embed-docs": "node scripts/embed-docs.mjs"
+    "embed-docs": "node scripts/embed-docs.mjs",
+    "eval": "node scripts/eval.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.93",
     "@ai-sdk/otel": "1.0.137",
     "@hookform/resolvers": "5.9.1",
+    "@langfuse/client": "6.1.1",
     "@langfuse/otel": "6.1.1",
     "@langfuse/tracing": "6.1.1",
     "@langfuse/vercel-ai-sdk": "6.1.1",
