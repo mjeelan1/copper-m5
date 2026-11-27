@@ -46,6 +46,10 @@ export type EvalOutput = {
   /** Agents that answered, in order: ["copper"] or ["copper", "refund"]. */
   agents: string[];
   tools: { agent: string; name: string; output?: unknown }[];
+  /** How long Copper took to answer, in seconds (set by npm run eval). */
+  seconds?: number;
+  /** What Copper's model calls cost for this answer (set by npm run eval). */
+  costUsd?: number;
 };
 
 /** The golden set as Langfuse dataset items. Stable ids, so re-syncing updates them. */

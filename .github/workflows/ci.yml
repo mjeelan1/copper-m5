@@ -7,6 +7,12 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same pull request cancels the older run, so the eval
+# doesn't spend the Gemini quota twice.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     # Students work on macOS and Windows; Vercel builds on Linux.
@@ -27,13 +33,48 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # Module 5: asks Ask Copper (two agents) the golden set, grades every answer
+  # with the AI judge, and sends the scores to Langfuse with the commit and
+  # branch. The score table lands in the job summary, which the pull request's
+  # checks link to. Fails if any answer isn't confirmed safe or fewer than 80%
+  # of questions pass. Linux only, and only after the tests pass on every OS.
+  eval:
+    name: Golden-set eval
+    needs: [check]
+    runs-on: ubuntu-latest
+    # 15 questions at 15 requests a minute, with a minute's wait per retry.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Ask Copper the golden set, judged by AI
+        run: npm run eval
+        env:
+          # From the repo's Actions secrets; GitHub masks them in the logs.
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          # The app and the judge both use Flash-Lite: the free tier allows it
+          # 15 requests a minute (Gemini 3 Flash only 20 a day).
+          AI_MODEL: google/gemini-3.5-flash-lite
+          EVAL_JUDGE_MODEL: google/gemini-3.5-flash-lite
+          EVAL_MIN_PASS_RATE: "0.8"
+          # The pull request's own commit and branch, not GitHub's merge commit.
+          EVAL_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVAL_BRANCH: ${{ github.head_ref || github.ref_name }}
+
   # The one check that branch protection on main requires. It passes only when
-  # every job above passed on every OS. Add new jobs (like the eval) to `needs`.
+  # every job above passed: the tests on every OS and the golden-set eval.
   # `if: always()` matters: without it this job is skipped when a check fails,
   # and GitHub counts a skipped required check as passing.
   all-checks:
     name: All checks passed
-    needs: [check]
+    needs: [check, eval]
     if: always()
     runs-on: ubuntu-latest
     steps:
