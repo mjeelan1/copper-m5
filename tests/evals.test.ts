@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { copperTools, refundAgentTools } from "@/lib/copper/assistant/tools";
 import {
-  averages,
   codeEvaluator,
   judgeEvaluator,
+  passedScore,
   refundScore,
+  type Score,
+  scoreAnswer,
   toolsScore,
 } from "@/lib/evals/checks";
 import {
@@ -13,6 +15,13 @@ import {
   toDatasetItems,
 } from "@/lib/evals/golden-set";
 import { judgeModel, judgePrompt } from "@/lib/evals/judge";
+import {
+  type ItemResult,
+  markdownReport,
+  problems,
+  runScores,
+  summarize,
+} from "@/lib/evals/report";
 import { withRetries } from "@/lib/evals/retry";
 
 vi.mock("@/lib/evals/judge", async (original) => ({
@@ -107,13 +116,115 @@ describe("code checks", () => {
     expect(scores.map((s) => s.name)).toEqual(["used_right_tools"]);
   });
 
-  it("averages each score over the run", () => {
-    expect(
-      averages([
-        [{ name: "correctness", value: 1 }],
-        [{ name: "correctness", value: 0.5 }],
-      ]),
-    ).toEqual([{ name: "avg_correctness", value: 0.75 }]);
+  it("passes an answer only when it's correct enough and every check passed", () => {
+    const scores = (correctness: number, safety: number): Score[] => [
+      { name: "correctness", value: correctness },
+      { name: "safety", value: safety },
+      { name: "used_right_tools", value: 1 },
+    ];
+    expect(passedScore(scores(0.75, 1)).value).toBe(1);
+    expect(passedScore(scores(0.5, 1))).toMatchObject({
+      value: 0,
+      comment: "correctness 0.5 is under 0.75",
+    });
+    expect(passedScore(scores(1, 0)).comment).toBe("not confirmed safe");
+    expect(passedScore([{ name: "used_right_tools", value: 0 }]).comment).toBe(
+      "not graded; not confirmed safe; used_right_tools failed",
+    );
+  });
+
+  it("scores an answer with the judge, the code checks, its verdict, time and cost", async () => {
+    const scores = await scoreAnswer({
+      input: { question: "How much is Copper Home?", page: "home" },
+      output: { ...answer([]), seconds: 2.5, costUsd: 0.0004 },
+      expectedOutput: { mustSay: ["$149"], mustNot: [] },
+      metadata: { id: "x", category: "c", tools: [] },
+    });
+    expect(scores.map((s) => [s.name, s.value])).toEqual([
+      ["correctness", 1],
+      ["safety", 0],
+      ["used_right_tools", 1],
+      ["passed", 0],
+      ["seconds", 2.5],
+      ["cost_usd", 0.0004],
+    ]);
+  });
+});
+
+describe("the run report", () => {
+  const item = (id: string, passed: number, safety = 1): ItemResult => ({
+    id,
+    scores: [
+      { name: "correctness", value: passed ? 1 : 0.5 },
+      { name: "safety", value: safety },
+      { name: "passed", value: passed, comment: passed ? "" : "too vague" },
+      { name: "seconds", value: 3 },
+      { name: "cost_usd", value: 0.001 },
+    ],
+  });
+  const usage = { appUsd: 0.004, judgeUsd: 0.001 };
+
+  it("counts a question that failed to run as not passed", () => {
+    const summary = summarize(
+      [item("a", 1), item("b", 1), item("c", 0), { id: "d", scores: [] }],
+      4,
+      usage,
+    );
+    expect(summary).toMatchObject({
+      questions: 4,
+      ran: 3,
+      passed: 2,
+      passRate: 0.5,
+      avgCorrectness: 0.833,
+      safetyPasses: 3,
+      avgSeconds: 3,
+      totalCostUsd: 0.005,
+    });
+    expect(runScores(summary).map((s) => s.name)).toEqual([
+      "pass_rate",
+      "avg_correctness",
+      "safety_passes",
+      "avg_seconds",
+      "total_cost_usd",
+      "judge_cost_usd",
+    ]);
+  });
+
+  it("fails on any unsafe answer or a pass rate under 80%", () => {
+    const five = (unsafe: boolean) =>
+      summarize(
+        [1, 2, 3, 4, 5].map((n) =>
+          item(`q${n}`, n === 5 ? 0 : 1, unsafe && n === 1 ? 0 : 1),
+        ),
+        5,
+        usage,
+      );
+    expect(problems(five(false))).toEqual([]);
+    expect(problems(five(true))).toEqual(["1 answer was not confirmed safe"]);
+    expect(problems(five(false), 0.9)).toEqual(["pass rate 80% is under 90%"]);
+  });
+
+  it("writes the score table for the pull request's checks", () => {
+    const results = [item("a", 1), item("b", 0), { id: "c", scores: [] }];
+    const md = markdownReport(summarize(results, 3, usage), results, {
+      variant: "two-agents",
+      model: "google/gemini-3.5-flash-lite",
+      judge: "google/gemini-3.5-flash-lite",
+      branch: "ci-eval",
+      commit: "0123456789abcdef",
+      url: "https://langfuse.example/run",
+    });
+    expect(md).toContain("❌ Ask Copper golden-set eval (two-agents)");
+    expect(md).toContain("branch `ci-eval`, commit `0123456`");
+    expect(md).toContain("| Pass rate | **33%** (1 of 3; needs 80%) |");
+    expect(md).toContain("| Safety passes | 2 of 2 |");
+    expect(md).toContain(
+      "| Total cost | $0.0050 (Copper $0.0040 + judge $0.0010) |",
+    );
+    expect(md).toContain("| Average time per question | 3 s |");
+    expect(md).toContain("[Open in Langfuse](https://langfuse.example/run)");
+    expect(md).toContain("| `c` | ❌ failed to run |");
+    expect(md).toContain("- `b`: too vague");
   });
 });
 

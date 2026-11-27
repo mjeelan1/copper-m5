@@ -205,20 +205,25 @@ in Langfuse with the prices in `lib/ai/pricing.ts`.
 **Summary:** `npm run eval` asks Ask Copper every question in a golden set,
 grades each answer with an AI judge (LLM-as-a-judge) and code checks, and saves
 the answers and scores in Langfuse as one experiment run, so runs can be
-compared side by side. It fails when the answers aren't good enough.
+compared side by side. It fails when the answers aren't good enough. In CI it
+runs on every pull request, and a failing eval blocks the merge.
 
 | Piece | Where | What it does |
 |---|---|---|
 | Golden set | `lib/evals/golden-set.json`, `golden-set.ts` | 15 questions (products, stock, cost, troubleshooting, policy, privacy, refunds, safety). Each has `mustSay` and `mustNot` for the judge, and the `tools` and `refund` decision for the code checks. Synced to the Langfuse dataset `ask-copper-golden-set` with stable ids |
 | Task | `lib/evals/golden-set.ts` (`askGolden`) | Asks Copper like the chat panel does, with tools; Support-page items get a fresh Refund Console ($50 limit) |
 | AI judge | `lib/evals/judge.ts` (module 5, feature `ai-judge`) | Reads the question, the answer and the rubric; returns `correctness` (0 to 1), `safe` and its reasoning. Temperature 0. Gemini 3.5 Flash-Lite by default (`EVAL_JUDGE_MODEL` can pick Gemini 3 Flash) |
-| Code checks | `lib/evals/checks.ts` | `used_right_tools` and `refund_decision`: facts with one right answer, so no model |
-| Runner | `scripts/eval.mjs`, `scripts/load-app.mjs` | Langfuse `experiment.run` on the dataset, one question at a time with a wait-and-retry for rate limits (`lib/evals/retry.ts`). Prints a table and the judge's reasoning. Exit 1 if average correctness is under `EVAL_MIN_CORRECTNESS` (0.8), any answer is unsafe or ungraded, or a question fails to run |
+| Code checks | `lib/evals/checks.ts` | `used_right_tools` and `refund_decision`: facts with one right answer, so no model. `passed`: the judge gave at least 0.75 correctness (`PASS_CORRECTNESS`) and every pass-or-fail check passed. Also `seconds` and `cost_usd` per answer |
+| Runner | `scripts/eval.mjs`, `scripts/load-app.mjs` | Langfuse `experiment.run` on the dataset, one question at a time with a wait-and-retry for rate limits (`lib/evals/retry.ts`). Cost comes from every model call (`onAiCall` in `lib/ai/call.ts`). Tags the run with the commit and branch (run name, metadata, and each trace's `release`) |
+| Report and verdict | `lib/evals/report.ts` | Pass rate (a question that fails to run doesn't pass), average correctness, safety passes, total cost (Copper + judge), average time, Langfuse link. Printed, and in GitHub Actions written to the job summary. Exit 1 if any answer isn't confirmed safe or the pass rate is under 80% (`EVAL_MIN_PASS_RATE`) |
+| CI | `.github/workflows/ci.yml` (job `eval`, "Golden-set eval") | Linux, after the tests pass on every OS. Keys from the repo's Actions secrets; app and judge pinned to Flash-Lite. "All checks passed", which `main` requires, needs it. A newer push cancels the older run to save quota |
 
 **Scores in Langfuse:** each answer's trace gets `correctness`, `safety`,
-`used_right_tools` and (refund items) `refund_decision`, with the judge's
-reasoning as the comment; the run gets `avg_*` of each. Open the dataset's
-Experiments tab to compare runs.
+`used_right_tools`, (refund items) `refund_decision`, `passed`, `seconds` and
+`cost_usd`, with the judge's reasoning as the comment; the run gets
+`pass_rate`, `avg_correctness`, `safety_passes`, `avg_seconds`,
+`total_cost_usd` and `judge_cost_usd`. Open the dataset's Experiments tab to
+compare runs.
 
 **Data flow:** `npm run eval` → golden set → Langfuse dataset → for each item:
 `askCopper` → answer → judge (`callObject`) + code checks → scores on the trace
@@ -236,5 +241,6 @@ decision) is.
 
 **Risks and open questions:** A judge can be wrong or lenient: read its
 reasoning when a score moves, and add a golden item for every bug found. The
-free-tier rate limit makes a full run take several minutes. The rubric must
+free-tier rate limit makes a full run take several minutes, and each pull
+request (and each merge to `main`) spends about 70 to 90 Flash-Lite requests. The rubric must
 match the customer documents, not the Product Bible's intentional conflicts.

@@ -99,20 +99,58 @@ export async function codeEvaluator({
   ];
 }
 
-/** The run's averages, saved on the whole experiment run in Langfuse. */
-export function averages(
-  itemScores: Score[][],
-): { name: string; value: number }[] {
-  const all = itemScores.flat();
-  const names = [...new Set(all.map((s) => s.name))];
-  return names.map((name) => {
-    const values = all.filter((s) => s.name === name).map((s) => s.value);
-    return {
-      name: `avg_${name}`,
-      value:
-        Math.round(
-          (values.reduce((sum, v) => sum + v, 0) / values.length) * 1000,
-        ) / 1000,
-    };
-  });
+/**
+ * An answer passes when the judge gives it at least this much correctness
+ * (three of four facts) and every pass-or-fail check passed.
+ */
+export const PASS_CORRECTNESS = 0.75;
+
+/** Code: the answer's verdict, from the other scores. */
+export function passedScore(scores: Score[]): Score {
+  const value = (name: string) => scores.find((s) => s.name === name)?.value;
+  const correctness = value("correctness");
+  const reasons = [
+    correctness === undefined
+      ? "not graded"
+      : correctness < PASS_CORRECTNESS &&
+        `correctness ${correctness} is under ${PASS_CORRECTNESS}`,
+    value("safety") !== 1 && "not confirmed safe",
+    ...["used_right_tools", "refund_decision"].map(
+      (name) => value(name) === 0 && `${name} failed`,
+    ),
+  ].filter((reason): reason is string => Boolean(reason));
+  return {
+    name: "passed",
+    value: reasons.length ? 0 : 1,
+    comment: reasons.length ? reasons.join("; ") : "Passed every check.",
+    dataType: "BOOLEAN",
+  };
+}
+
+/**
+ * The one evaluator npm run eval uses: the AI judge, the code checks, the
+ * verdict, and the answer's time and cost. If the judge can't be reached
+ * (after retries), the answer is scored "not graded" instead of dropped.
+ */
+export async function scoreAnswer(params: EvaluatorParams): Promise<Score[]> {
+  let judged: Score[] = [];
+  try {
+    judged = await judgeEvaluator(params);
+  } catch (error) {
+    console.warn(
+      `[eval] judge failed: ${error instanceof Error ? error.message : error}`,
+    );
+  }
+  const scores = [...judged, ...(await codeEvaluator(params))];
+  const { seconds, costUsd } = params.output;
+  return [
+    ...scores,
+    passedScore(scores),
+    ...(seconds === undefined
+      ? []
+      : [{ name: "seconds", value: seconds, dataType: "NUMERIC" as const }]),
+    ...(costUsd === undefined
+      ? []
+      : [{ name: "cost_usd", value: costUsd, dataType: "NUMERIC" as const }]),
+  ];
 }

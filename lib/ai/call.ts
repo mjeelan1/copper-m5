@@ -68,9 +68,21 @@ function languageModel(model: ModelId) {
   return google()(id);
 }
 
+const listeners = new Set<(row: AiCallRow) => void>();
+
+/**
+ * Calls `listener` with every model call's row (tokens, cost, time). The
+ * golden-set eval uses it to add up cost (Module 5). Returns an unsubscribe.
+ */
+export function onAiCall(listener: (row: AiCallRow) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /** Prints one line per model call, so the cost and time are visible. */
 async function logCall(row: AiCallRow): Promise<void> {
   console.info("[ai_calls]", JSON.stringify(row));
+  for (const listener of listeners) listener(row);
 }
 
 type Usage = { inputTokens?: number; outputTokens?: number };

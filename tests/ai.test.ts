@@ -8,6 +8,7 @@ import {
   callObject,
   callText,
   isAiConfigured,
+  onAiCall,
 } from "@/lib/ai/call";
 import { EMBEDDING_MODEL, MODELS } from "@/lib/ai/models";
 import { costUsd, PRICING } from "@/lib/ai/pricing";
@@ -115,6 +116,17 @@ describe("lib/ai/call.ts", () => {
     const flag: boolean = result.output.flag;
     expect(flag).toBe(false);
     expect(result.usage).toBeDefined();
+  });
+
+  it("tells onAiCall listeners about each call, until they unsubscribe", async () => {
+    captureLog();
+    model = replyWith("ok");
+    const seen: string[] = [];
+    const stop = onAiCall((row) => seen.push(`${row.feature}:${row.ok}`));
+    await callText({ module: 5, feature: "ai-judge" }, { prompt: "hi" });
+    stop();
+    await callText({ module: 5, feature: "after" }, { prompt: "hi" });
+    expect(seen).toEqual(["ai-judge:true"]);
   });
 
   it("uses Gemini 3.5 Flash-Lite when no model is given", async () => {
