@@ -11,6 +11,9 @@
 // back. The agent that ends the turn answers the next message too.
 // Module 5: each turn is one trace in Langfuse ("ask-copper"), with a span per
 // agent that answered, and inside it that agent's model calls and tools.
+// ASK_COPPER_AGENTS=single-agent (lib/copper/assistant/variant.ts) swaps the two
+// agents on the Support page for one support agent with all their tools and
+// no handoff. Two agents stay the default.
 import { propagateAttributes, startActiveObservation } from "@langfuse/tracing";
 import { hasToolCall, stepCountIs } from "ai";
 import { after } from "next/server";
@@ -21,6 +24,7 @@ import {
   COPPER_HANDOFF,
   COPPER_INSTRUCTIONS,
   REFUND_AGENT_INSTRUCTIONS,
+  SUPPORT_AGENT_INSTRUCTIONS,
 } from "@/lib/copper/assistant/instructions";
 import type {
   Agent,
@@ -30,8 +34,10 @@ import type {
 import {
   copperTools,
   refundAgentTools,
+  supportAgentTools,
   transferToRefundAgent,
 } from "@/lib/copper/assistant/tools";
+import { agentVariant } from "@/lib/copper/assistant/variant";
 import type { Desk } from "@/lib/copper/orders";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -63,6 +69,13 @@ const STOP = [
   stepCountIs(MAX_STEPS),
   hasToolCall("transfer_to_refund_agent", "transfer_to_copper"),
 ];
+
+/**
+ * The single support agent's step limit: the two agents get MAX_STEPS each, so
+ * one agent doing both jobs gets twice as many. A cap, not a cost: most turns
+ * use 1 to 3.
+ */
+const SINGLE_AGENT_MAX_STEPS = MAX_STEPS * 2;
 
 const SORRY = "Sorry, something went wrong on my end. Please try again.";
 
@@ -119,6 +132,20 @@ function agentCall(agent: Agent, messages: ChatMessage[], desk?: Desk) {
   );
 }
 
+/** Module 5: the single support agent's call: every tool, no handoff. */
+function supportCall(messages: ChatMessage[], desk: Desk) {
+  return callStream(
+    { module: 5, feature: "support-agent" },
+    {
+      messages,
+      providerOptions: THOUGHT_SUMMARIES,
+      instructions: SUPPORT_AGENT_INSTRUCTIONS,
+      tools: supportAgentTools(desk),
+      stopWhen: stepCountIs(SINGLE_AGENT_MAX_STEPS),
+    },
+  );
+}
+
 export async function askCopper({
   messages,
   useTools,
@@ -126,7 +153,11 @@ export async function askCopper({
   agent = "copper",
 }: AskCopperRequest): Promise<AskCopperResult> {
   const { live, update, done } = createLive<Progress>();
-  const first: Agent = desk && useTools ? agent : "copper";
+  const variant = agentVariant();
+  // Only the Support page (with tools) has two agents to choose between.
+  const single = variant === "single-agent" && Boolean(desk && useTools);
+  // The single agent shows in the panel as Copper: it is Copper, doing both jobs.
+  const first: Agent = desk && useTools && !single ? agent : "copper";
   const progress: Progress = {
     steps: [],
     reply: "",
@@ -234,6 +265,12 @@ export async function askCopper({
             ),
           ),
         );
+      } else if (single && desk) {
+        await startActiveObservation(
+          "Support agent",
+          () => follow("copper", supportCall(messages, desk)),
+          { asType: "agent" },
+        );
       } else {
         let current = first;
         for (let handoffs = 0; ; handoffs++) {
@@ -267,11 +304,12 @@ export async function askCopper({
   const turn = propagateAttributes(
     {
       traceName: "ask-copper",
-      // "two-agents": Copper can hand off to the Refund agent (Support page).
+      // On the Support page: "two-agents" (Copper can hand off to the Refund
+      // agent) or "single-agent" (one support agent does both jobs).
       tags: [
         desk ? "support-page" : "home-page",
         useTools ? "tools" : "no-tools",
-        ...(desk && useTools ? ["two-agents"] : []),
+        ...(desk && useTools ? [variant] : []),
       ],
     },
     () =>
@@ -280,7 +318,7 @@ export async function askCopper({
         async (span) => {
           span.update({
             input: messages.at(-1)?.content,
-            metadata: { firstAgent: first, turns: messages.length },
+            metadata: { firstAgent: first, turns: messages.length, variant },
           });
           await run();
           span.update({

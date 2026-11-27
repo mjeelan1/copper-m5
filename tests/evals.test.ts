@@ -91,6 +91,32 @@ describe("code checks", () => {
     expect(toolsScore(answer([]), []).value).toBe(1);
   });
 
+  it("doesn't ask the single agent for handoff tools it doesn't have", () => {
+    const refund = answer([
+      { agent: "copper", name: "get_orders" },
+      { agent: "copper", name: "request_refund" },
+    ]);
+    const needs = ["transfer_to_refund_agent", "request_refund"];
+    expect(
+      toolsScore({ ...refund, variant: "single-agent" }, needs).value,
+    ).toBe(1);
+    expect(
+      toolsScore({ ...refund, variant: "two-agents" }, needs),
+    ).toMatchObject({
+      value: 0,
+      comment: expect.stringContaining("transfer_to_refund_agent"),
+    });
+    expect(
+      toolsScore(
+        {
+          ...answer([{ agent: "copper", name: "get_orders" }]),
+          variant: "single-agent",
+        },
+        needs,
+      ).value,
+    ).toBe(0);
+  });
+
   it("checks the app's refund decision, not the reply", () => {
     const out = answer([
       {

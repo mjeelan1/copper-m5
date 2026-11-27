@@ -7,17 +7,35 @@
 // the pull request's checks). Fails (exit 1) if any answer isn't confirmed
 // safe or fewer than 80% of questions pass (lib/evals/report.ts).
 //
-//   npm run eval                       every question
-//   npm run eval -- --only error-c47   one question (by its id)
+//   npm run eval                              every question, two agents
+//   npm run eval -- --variant single-agent    the single support agent
+//   npm run eval -- --only error-c47          one question (by its id)
 //
 // Needs GOOGLE_GENERATIVE_AI_API_KEY and the three LANGFUSE_* keys. Optional:
-// EVAL_MIN_PASS_RATE (default 0.8), EVAL_JUDGE_MODEL (lib/evals/judge.ts),
+// ASK_COPPER_AGENTS (same as --variant), EVAL_MIN_PASS_RATE (default 0.8),
+// EVAL_JUDGE_MODEL (lib/evals/judge.ts),
 // EVAL_BRANCH and EVAL_COMMIT (CI sets them; locally read from git).
 import { execSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import "./load-app.mjs";
 
-const VARIANT = "two-agents";
+const arg = (name) =>
+  process.argv.includes(name)
+    ? process.argv[process.argv.indexOf(name) + 1]
+    : undefined;
+
+// --variant picks the version of Ask Copper, the same switch the app reads.
+if (arg("--variant")) process.env.ASK_COPPER_AGENTS = arg("--variant");
+const { AGENT_VARIANTS, agentVariant } =
+  await import("../lib/copper/assistant/variant.ts");
+if (
+  process.env.ASK_COPPER_AGENTS &&
+  !AGENT_VARIANTS.includes(process.env.ASK_COPPER_AGENTS)
+) {
+  console.error(`eval: --variant must be ${AGENT_VARIANTS.join(" or ")}.`);
+  process.exit(1);
+}
+const VARIANT = agentVariant();
 
 const { isAiConfigured, onAiCall } = await import("../lib/ai/call.ts");
 const { defaultModel } = await import("../lib/ai/models.ts");
@@ -76,9 +94,7 @@ for (const item of toDatasetItems())
   await langfuse.api.datasetItems.create({ datasetName: name, ...item });
 
 // 2. Ask Copper each question and score the answers.
-const only = process.argv.includes("--only")
-  ? process.argv[process.argv.indexOf("--only") + 1]
-  : undefined;
+const only = arg("--only");
 const dataset = await langfuse.dataset.get(name);
 const ids = new Set(GOLDEN_SET.items.map((i) => i.id));
 const items = dataset.items.filter(
@@ -89,7 +105,7 @@ if (!items.length) {
   process.exit(1);
 }
 console.log(
-  `Asking Copper ${items.length} question(s) (${MODEL}), judged by ${JUDGE}${branch ? `, on ${branch}` : ""}…`,
+  `Asking Copper (${VARIANT}) ${items.length} question(s) (${MODEL}), judged by ${JUDGE}${branch ? `, on ${branch}` : ""}…`,
 );
 
 // Adds up what every model call costs: Copper's (per answer, too) and the judge's.

@@ -244,3 +244,46 @@ reasoning when a score moves, and add a golden item for every bug found. The
 free-tier rate limit makes a full run take several minutes, and each pull
 request (and each merge to `main`) spends about 70 to 90 Flash-Lite requests. The rubric must
 match the customer documents, not the Product Bible's intentional conflicts.
+
+## Module 5: Single agent vs two agents
+
+**Summary:** A second version of Ask Copper for the Support page: one support
+agent with all the tools of Copper and the Refund agent, and no handoff. Two
+agents stay the default; `ASK_COPPER_AGENTS=single-agent` switches. The golden
+set compares them.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Switch | `lib/copper/assistant/variant.ts` | `agentVariant()` reads `ASK_COPPER_AGENTS`: `two-agents` (default) or `single-agent` |
+| Single agent | `ask.ts` (`supportCall`, module 5, feature `support-agent`), `instructions.ts` (`SUPPORT_AGENT_INSTRUCTIONS`), `tools.ts` (`supportAgentTools`) | Copper's instructions plus the same refund rules (`REFUND_RULES`, shared with the Refund agent, whose instructions are unchanged); Copper's five tools plus `get_orders` and `request_refund`; up to 10 steps (the two agents get 5 each). Shows in the panel as Copper. One Langfuse span, "Support agent"; traces tagged `single-agent` or `two-agents` |
+| Refund rule | `lib/copper/orders.ts` (unchanged) | Both versions call the same `request_refund`, so the app decides every refund against the limit |
+| Eval | `npm run eval -- --variant single-agent` | Same golden set, judge model and pass rule. The tools check skips handoff tools for the single agent (`neededTools` in `checks.ts`) |
+
+**First comparison (27 Nov 2026, commit `66efc74`, one run each, Flash-Lite app and judge):**
+
+| | single-agent | two-agents |
+|---|---|---|
+| Pass rate | 93% (14/15) | 93% (14/15) |
+| Average correctness | 0.967 | 0.967 |
+| Safety passes | 15/15 | 15/15 |
+| Total cost (Copper + judge) | $0.0315 | $0.0347 |
+| Copper cost per question | $0.0019 | $0.0021 |
+| Average time per question | 3.0 s | 4.9 s |
+| Refund questions: average time | 2.6 s | 10.0 s (median 4.4 s) |
+| Refund questions: Copper cost per question | $0.0023 | $0.0021 |
+| Refund questions: agent turns | 1 | 2 (Copper hands off, Refund agent answers) |
+
+Both missed `returns-window`: Copper quoted the Terms ("30 days of the date
+you received it"), the rubric expects the user guides' "30 days of purchase".
+
+**Decisions and trade-offs:** Only the 3 Support-page questions differ between
+the versions; the other 12 run the same code, so their cost and time
+differences are noise. The single agent saves a model turn per refund (faster)
+but carries a longer prompt with 7 tools (slightly more per refund). Two
+agents keep refund tools away from the general agent (least privilege), but
+the refund decision is code either way.
+
+**Risks and open questions:** One run each, and only 3 refund questions: add
+more Support-page items (refund plus another question, an order that doesn't
+exist, a refund status check) before deciding on speed. CI evaluates the
+default (two agents) only.
