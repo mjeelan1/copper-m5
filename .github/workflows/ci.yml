@@ -58,7 +58,9 @@ jobs:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          # Langfuse's public address: a variable, not a secret, so GitHub
+          # doesn't mask it and the Langfuse link in the summary works.
+          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
           # The app and the judge both use Flash-Lite: the free tier allows it
           # 15 requests a minute (Gemini 3 Flash only 20 a day).
           AI_MODEL: google/gemini-3.5-flash-lite
